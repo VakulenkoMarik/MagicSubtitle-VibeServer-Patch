@@ -166,6 +166,138 @@ local function buildSrtFromVibeOutput(rawText, srtFile, maxWords)
     return true, nil
 end
 
+local function parseSrtTimestamp(timestamp)
+    local h, m, s, ms = timestamp:match("(%d+):(%d+):(%d+),(%d+)")
+    if not h then return nil end
+    return tonumber(h) * 3600
+        + tonumber(m) * 60
+        + tonumber(s)
+        + tonumber(ms) / 1000
+end
+
+local function formatSrtTimestamp(seconds)
+    local totalMs = math.floor(seconds * 1000 + 0.5)
+    local hours = math.floor(totalMs / 3600000)
+    totalMs = totalMs % 3600000
+    local minutes = math.floor(totalMs / 60000)
+    totalMs = totalMs % 60000
+    local secs = math.floor(totalMs / 1000)
+    local millis = totalMs % 1000
+    return string.format("%02d:%02d:%02d,%03d", hours, minutes, secs, millis)
+end
+
+local function adjustSrtToAudioClips(srtFile, timeline, project, audioTrack)
+    local frameRate = tonumber(project:GetSetting("timelineFrameRate"))
+    if not frameRate or frameRate <= 0 then
+        error("Could not read a valid timeline frame rate")
+    end
+
+    local timelineStartFrame = timeline:GetStartFrame()
+    local clipItems = timeline:GetItemListInTrack("audio", audioTrack) or {}
+    local clips = {}
+    for _, clip in ipairs(clipItems) do
+        local startFrame = clip:GetStart()
+        local endFrame = clip:GetEnd()
+        if not endFrame and startFrame and clip.GetDuration then
+            endFrame = startFrame + clip:GetDuration()
+        end
+        if startFrame and endFrame then
+            table.insert(clips, {
+                start = (startFrame - timelineStartFrame) / frameRate,
+                finish = (endFrame - timelineStartFrame) / frameRate
+            })
+        end
+    end
+    table.sort(clips, function(a, b) return a.start < b.start end)
+
+    local handle, openError = io.open(srtFile, "r")
+    if not handle then error("Could not read SRT for timeline adjustment: " .. tostring(openError)) end
+    local contents = handle:read("*a")
+    handle:close()
+    contents = contents:gsub("\r\n", "\n"):gsub("\r", "\n")
+
+    local entries = {}
+    for block in (contents .. "\n\n"):gmatch("(.-)\n\n") do
+        local indexText, timing, text = block:match("^(%d+)\n([^\n]+)\n(.*)$")
+        if indexText then
+            local startText, endText = timing:match("^(%d%d:%d%d:%d%d,%d%d%d)%s+%-%->%s+(%d%d:%d%d:%d%d,%d%d%d)$")
+            local startTime = startText and parseSrtTimestamp(startText)
+            local endTime = endText and parseSrtTimestamp(endText)
+            if startTime and endTime then
+                table.insert(entries, {
+                    start = startTime,
+                    finish = endTime,
+                    text = text
+                })
+            end
+        end
+    end
+
+    local adjustedCount = 0
+    local output = {}
+    for _, entry in ipairs(entries) do
+        local overlapsClip = false
+        local startInClip = false
+        local endInClip = false
+        for _, clip in ipairs(clips) do
+            if entry.start < clip.finish and entry.finish > clip.start then
+                overlapsClip = true
+            end
+            if entry.start >= clip.start and entry.start < clip.finish then
+                startInClip = true
+            end
+            if entry.finish > clip.start and entry.finish <= clip.finish then
+                endInClip = true
+            end
+        end
+
+        if overlapsClip then
+            local changed = false
+            if not startInClip then
+                for _, clip in ipairs(clips) do
+                    if clip.start >= entry.start and clip.start < entry.finish then
+                        entry.start = clip.start
+                        changed = true
+                        break
+                    end
+                end
+            end
+            if not endInClip then
+                for i = #clips, 1, -1 do
+                    local clip = clips[i]
+                    if clip.finish <= entry.finish and clip.finish > entry.start then
+                        entry.finish = clip.finish
+                        changed = true
+                        break
+                    end
+                end
+            end
+            if entry.finish > entry.start then
+                if changed then adjustedCount = adjustedCount + 1 end
+                table.insert(output, string.format(
+                    "%d\n%s --> %s\n%s",
+                    #output + 1,
+                    formatSrtTimestamp(entry.start),
+                    formatSrtTimestamp(entry.finish),
+                    entry.text
+                ))
+            else
+                adjustedCount = adjustedCount + 1
+            end
+        else
+            adjustedCount = adjustedCount + 1
+        end
+    end
+
+    if adjustedCount > 0 then
+        local writeHandle, writeError = io.open(srtFile, "w")
+        if not writeHandle then error("Could not update SRT for timeline gaps: " .. tostring(writeError)) end
+        writeHandle:write(table.concat(output, "\n\n") .. "\n")
+        writeHandle:close()
+        print(string.format("Adjusted %d subtitles to clip boundaries", adjustedCount))
+    end
+end
+
 local function transcribeWithVibeServer(
     vibeServerExe,
     audioFile,
@@ -309,6 +441,16 @@ def patch_file(original_path, output_path):
         patched[:branch_start]
         + BRANCH
         + patched[branch_end:]
+    )
+
+    transcription_complete_marker = 'print("✓ Transcription complete: " .. srtFile)'
+    if transcription_complete_marker not in patched:
+        raise SystemExit("ERROR: Could not find transcription completion point.")
+    patched = patched.replace(
+        transcription_complete_marker,
+        'adjustSrtToAudioClips(srtFile, timeline, project, selectedAudioTrack)\n'
+        + transcription_complete_marker,
+        1
     )
 
     audio_file_marker = 'local audioFile  = outputBase .. ".mov"'
