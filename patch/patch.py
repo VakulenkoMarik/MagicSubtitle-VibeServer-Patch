@@ -344,24 +344,14 @@ def patch_file(original_path, output_path):
         '        print(label .. " error: " .. tostring(value))\n'
         '        return false\n'
         '    end\n'
+        '    if type(value) == "table" then value = "table" end\n'
         '    print(label .. ": " .. tostring(value))\n'
-        '    if type(value) == "table" then\n'
-        '        for key, item in pairs(value) do\n'
-        '            print("  " .. tostring(key) .. " = " .. tostring(item))\n'
-        '        end\n'
-        '    end\n'
         '    return value\n'
         'end\n'
         'local timelineOk, timelineResult = pcall(function()\n'
         '    return project:SetCurrentTimeline(timeline)\n'
         'end)\n'
         'printRenderValue("SetCurrentTimeline", timelineOk, timelineResult)\n'
-        'local formatsOk, formats = pcall(function() return project:GetRenderFormats() end)\n'
-        'printRenderValue("GetRenderFormats", formatsOk, formats)\n'
-        'local codecsOk, codecs = pcall(function()\n'
-        '    return project:GetRenderCodecs("wav")\n'
-        'end)\n'
-        'printRenderValue("GetRenderCodecs(wav)", codecsOk, codecs)\n'
         'local renderJobId\n'
         'local exportOk = timelineOk and timelineResult ~= false\n'
         'local renderResult = false\n'
@@ -442,9 +432,13 @@ def patch_file(original_path, output_path):
         '    local statusOk, statusResult = pcall(function()\n'
         '        return project:GetRenderJobStatus(renderJobId)\n'
         '    end)\n'
-        '    printRenderValue("GetRenderJobStatus", statusOk, statusResult)\n'
         '    local jobStatus = statusOk and type(statusResult) == "table"\n'
         '        and statusResult.JobStatus or nil\n'
+        '    if statusOk then\n'
+        '        print("Render job status: " .. tostring(jobStatus or "unavailable"))\n'
+        '    else\n'
+        '        print("GetRenderJobStatus error: " .. tostring(statusResult))\n'
+        '    end\n'
         '    if not statusOk then\n'
         '        exportOk = false\n'
         '    elseif renderTimedOut or jobStatus ~= "Complete" then\n'
@@ -481,8 +475,129 @@ def patch_file(original_path, output_path):
         'end\n\n'
         'print(string.format("Audio export finished in %.2f seconds '
         '(wall clock: %d seconds)", os.clock() - renderStartedAt, '
-        'os.time() - renderWallStartedAt))\n\n'
+        'os.time() - renderWallStartedAt))\n'
+        'restoreProjectRenderSettings()\n\n'
         '-- Restore tracks immediately',
+        1
+    )
+
+    audio_state_marker = (
+        '-- Solo selected audio track, disable all video for export\n'
+        'local originalAudioStates = rememberAudioState(timeline)\n'
+    )
+    if audio_state_marker not in patched:
+        raise SystemExit("ERROR: Could not find audio track state setup.")
+    patched = patched.replace(
+        audio_state_marker,
+        '-- Solo selected audio track\n'
+        'local originalAudioStates = rememberAudioState(timeline)\n'
+        'local originalRenderFormat, originalRenderCodec\n'
+        'local renderFormatSnapshotOk, renderFormatSnapshotError = pcall(function()\n'
+        '    originalRenderFormat, originalRenderCodec = project:GetCurrentRenderFormatAndCodec()\n'
+        'end)\n'
+        'if renderFormatSnapshotOk then\n'
+        '    print("Saved render format/codec: " .. tostring(originalRenderFormat)\n'
+        '        .. " / " .. tostring(originalRenderCodec))\n'
+        'else\n'
+        '    print("Could not save render format/codec: " .. tostring(renderFormatSnapshotError))\n'
+        'end\n'
+        'local renderSettingsSnapshotOk, originalRenderSettings = pcall(function()\n'
+        '    return project:GetRenderSettings()\n'
+        'end)\n'
+        'if renderSettingsSnapshotOk then\n'
+        '    print("Saved render settings: " .. (type(originalRenderSettings) == "table" and "available" or "unavailable"))\n'
+        'else\n'
+        '    print("Could not save render settings: " .. tostring(originalRenderSettings))\n'
+        'end\n'
+        'local renderSettingsRestored = false\n'
+        'local function restoreProjectRenderSettings()\n'
+        '    if renderSettingsRestored then return end\n'
+        '    renderSettingsRestored = true\n'
+        '    if renderFormatSnapshotOk and originalRenderFormat and originalRenderCodec then\n'
+        '        local restoreFormatOk, restoreFormatResult = pcall(function()\n'
+        '            return project:SetCurrentRenderFormatAndCodec(originalRenderFormat, originalRenderCodec)\n'
+        '        end)\n'
+        '        if restoreFormatOk then\n'
+        '            print("Restored render format/codec: " .. tostring(restoreFormatResult))\n'
+        '        else\n'
+        '            print("ERROR: Could not restore render format/codec: " .. tostring(restoreFormatResult))\n'
+        '        end\n'
+        '    end\n'
+        '    if renderSettingsSnapshotOk and type(originalRenderSettings) == "table" then\n'
+        '        local restoreSettingsOk, restoreSettingsResult = pcall(function()\n'
+        '            return project:SetRenderSettings(originalRenderSettings)\n'
+        '        end)\n'
+        '        if restoreSettingsOk then\n'
+        '            print("Restored render settings: " .. tostring(restoreSettingsResult))\n'
+        '        else\n'
+        '            print("ERROR: Could not restore render settings: " .. tostring(restoreSettingsResult))\n'
+        '        end\n'
+        '    end\n'
+        'end\n'
+        'local runOk, runError = pcall(function()\n',
+        1
+    )
+
+    video_disable_block = (
+        'local videoTrackCount = timeline:GetTrackCount("video") or 0\n'
+        'local originalVideoStates = {}\n'
+        'for i = 1, videoTrackCount do\n'
+        '    local ok, state = pcall(function() return timeline:GetIsTrackEnabled("video", i) end)\n'
+        '    originalVideoStates[i] = (ok and (state == true)) or false\n'
+        '    pcall(function() timeline:SetTrackEnable("video", i, false) end)\n'
+        'end\n'
+    )
+    video_restore_block = (
+        '-- Restore tracks immediately\n'
+        'for i = 1, videoTrackCount do\n'
+        '    pcall(function() timeline:SetTrackEnable("video", i, originalVideoStates[i]) end)\n'
+        'end\n'
+        'restoreAudioState(timeline, originalAudioStates)\n'
+    )
+    if video_disable_block not in patched or video_restore_block not in patched:
+        raise SystemExit("ERROR: Could not find video track disable/restore blocks.")
+    patched = patched.replace(video_disable_block, "", 1)
+    patched = patched.replace(video_restore_block, "", 1)
+
+    patched += (
+        '\nend)\n'
+        'if not runOk then\n'
+        '    print("ERROR: Script failed: " .. tostring(runError))\n'
+        'end\n'
+        'restoreProjectRenderSettings()\n'
+        'restoreAudioState(timeline, originalAudioStates)\n'
+    )
+
+    append_marker = 'local appendedItems = mediaPool:AppendToTimeline({srtClip})'
+    if append_marker not in patched:
+        raise SystemExit("ERROR: Could not find subtitle timeline insertion call.")
+    patched = patched.replace(
+        append_marker,
+        'local function printTimelineBounds(label)\n'
+        '    local ok, startFrame, endFrame, startTimecode = pcall(function()\n'
+        '        return timeline:GetStartFrame(), timeline:GetEndFrame(), timeline:GetStartTimecode()\n'
+        '    end)\n'
+        '    if ok then\n'
+        '        print(label .. " timeline bounds: startFrame=" .. tostring(startFrame)\n'
+        '            .. ", endFrame=" .. tostring(endFrame)\n'
+        '            .. ", startTimecode=" .. tostring(startTimecode))\n'
+        '    else\n'
+        '        print(label .. " timeline bounds error: " .. tostring(startFrame))\n'
+        '    end\n'
+        'end\n'
+        'printTimelineBounds("Before subtitle insertion")\n'
+        'local startFrame = timeline:GetStartFrame()\n'
+        'print("SRT insertion: AppendToTimeline at recordFrame " .. tostring(startFrame))\n'
+        'local appendedItems = mediaPool:AppendToTimeline({{mediaPoolItem = srtClip, recordFrame = startFrame}})\n'
+        'printTimelineBounds("After subtitle insertion")\n'
+        'if appendedItems and #appendedItems > 0 and appendedItems[1] then\n'
+        '    local clipStartOk, clipStartFrame = pcall(function() return appendedItems[1]:GetStart() end)\n'
+        '    if clipStartOk then\n'
+        '        print("Subtitle clip start frame after insertion: " .. tostring(clipStartFrame))\n'
+        '    else\n'
+        '        print("Subtitle clip start frame error: " .. tostring(clipStartFrame))\n'
+        '    end\n'
+        'end',
         1
     )
 
