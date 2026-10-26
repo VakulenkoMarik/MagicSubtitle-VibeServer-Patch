@@ -171,10 +171,16 @@ local function buildSrtFromVibeOutputWithWordLimit(
     srtFile,
     maxWords,
     maxChars,
-    splitAtPunctuation
+    punctuationMode
 )
     local MAX_PAUSE_SECONDS = 0.55
     local SOFT_BREAK_MIN_WORD_RATIO = 0.5
+    local SOFT_BREAK_MIN_WORDS = 2
+    local PUNCTUATION_MODE_OFF = 0
+    local PUNCTUATION_MODE_SENTENCE_ENDS = 1
+    local PUNCTUATION_MODE_SENTENCE_SOFT_HALF = 2
+    local PUNCTUATION_MODE_SENTENCE_SOFT_TWO_WORDS = 3
+    local PUNCTUATION_MODE_EVERY_MARK = 4
     local HARD_BREAK_MARKS = {
         ["."] = true,
         ["?"] = true,
@@ -297,21 +303,23 @@ local function buildSrtFromVibeOutputWithWordLimit(
 
     local function trailingPunctuation(text)
         text = punctuationText(text)
-        if text:sub(-3) == "…" then
-            return "…"
+        for mark in pairs(HARD_BREAK_MARKS) do
+            if text:sub(-#mark) == mark then
+                return mark
+            end
         end
-        return text:sub(-1)
+        for mark in pairs(SOFT_BREAK_MARKS) do
+            if text:sub(-#mark) == mark then
+                return mark
+            end
+        end
+        return nil
     end
 
-    local function hardPunctuationBreak(previous, nextWord)
-        local mark = trailingPunctuation(previous.text)
-        if not HARD_BREAK_MARKS[mark] then
+    local function hasHardPunctuationException(previous, nextWord, mark)
+        if mark ~= "." then
             return false
         end
-        if mark ~= "." then
-            return true
-        end
-
         local ending = punctuationText(previous.text):lower()
         local initialism = #ending >= 4 and #ending % 2 == 0
         if initialism then
@@ -326,12 +334,48 @@ local function buildSrtFromVibeOutputWithWordLimit(
         if ABBREVIATIONS[ending]
             or ending:match("^%a%.$")
             or initialism then
-            return false
+            return true
         end
         if ending:match("%d%.$") and nextWord.text:match("^%d") then
+            return true
+        end
+        return false
+    end
+
+    local function punctuationDecision(previous, nextWord, currentWordCount)
+        local mark = trailingPunctuation(previous.text)
+        if not mark then
             return false
         end
-        return true
+
+        if punctuationMode == PUNCTUATION_MODE_OFF then
+            return false
+        end
+
+        local isHard = HARD_BREAK_MARKS[mark] == true
+        local isSoft = SOFT_BREAK_MARKS[mark] == true
+
+        if punctuationMode == PUNCTUATION_MODE_EVERY_MARK then
+            return isHard or isSoft
+        end
+
+        if isHard then
+            return not hasHardPunctuationException(previous, nextWord, mark)
+        end
+
+        if not isSoft
+            or punctuationMode == PUNCTUATION_MODE_SENTENCE_ENDS then
+            return false
+        end
+
+        local minimumWords = SOFT_BREAK_MIN_WORDS
+        if punctuationMode == PUNCTUATION_MODE_SENTENCE_SOFT_HALF then
+            minimumWords = math.ceil(maxWords * SOFT_BREAK_MIN_WORD_RATIO)
+        end
+        if currentWordCount >= minimumWords then
+            return true
+        end
+        return false
     end
 
     local entries = {}
@@ -348,12 +392,13 @@ local function buildSrtFromVibeOutputWithWordLimit(
             table.insert(parts, item.text)
         end
 
+        local cueText = table.concat(parts, " ")
         table.insert(entries,
             formatSrtTime(current[1].start)
             .. " --> "
             .. formatSrtTime(current[#current].finish)
             .. "\n"
-            .. table.concat(parts, " ")
+            .. cueText
         )
 
         current = {}
@@ -372,21 +417,14 @@ local function buildSrtFromVibeOutputWithWordLimit(
         local longPause = previous
             and item.start - previous.finish >= MAX_PAUSE_SECONDS
         local punctuationBreak = false
-        if splitAtPunctuation and previous and #current > 0 then
-            if hardPunctuationBreak(previous, item) then
-                punctuationBreak = true
-            elseif #current >= math.ceil(maxWords * SOFT_BREAK_MIN_WORD_RATIO)
-                and SOFT_BREAK_MARKS[trailingPunctuation(previous.text)] then
-                punctuationBreak = true
-            end
+        if previous and #current > 0 then
+            punctuationBreak =
+                punctuationDecision(previous, item, #current)
         end
 
-        if #current > 0 and (
-            tooManyWords
-            or tooLong
-            or longPause
-            or punctuationBreak
-        ) then
+        local closeCue = #current > 0
+            and (tooManyWords or tooLong or longPause or punctuationBreak)
+        if closeCue then
             flush()
             additionalChars = characterCount(item.text)
         end
@@ -613,7 +651,7 @@ local function transcribeWithVibeServerWordLimit(
     maxSentenceLen,
     prompt,
     maxWords,
-    splitAtPunctuation
+    punctuationMode
 )
     local rawFile = tempPath("MagicSubtitlesVibeRaw")
 
@@ -653,7 +691,7 @@ local function transcribeWithVibeServerWordLimit(
             srtFile,
             maxWords,
             tonumber(maxSentenceLen) or 35,
-            splitAtPunctuation
+            punctuationMode
         )
 
     if not srtOk then
@@ -694,7 +732,7 @@ elseif vibeMode == "legacy" then
                 maxSentenceLen,
                 initPrompt,
                 selectedMaxWords,
-                splitAtPunctuation
+                selectedPunctuationMode
             )
     else
         ok, exitCode, err =
@@ -758,14 +796,22 @@ def patch_file(original_path, output_path):
         + '    selectedMaxWordsIndex = tonumber(tool.MaxWords[0]) or 0\n'
         + 'end\n'
         + 'local selectedMaxWords = MAX_WORD_OPTIONS[selectedMaxWordsIndex]\n'
-        + 'local splitAtPunctuation = false\n'
+        + 'local selectedPunctuationMode = 0\n'
         + 'if tool and tool.SplitPunctuation then\n'
-        + '    local checkboxValue = tool.SplitPunctuation[0]\n'
-        + '    splitAtPunctuation = checkboxValue == true or tonumber(checkboxValue) == 1\n'
+        + '    selectedPunctuationMode = tonumber(tool.SplitPunctuation[0]) or 0\n'
         + 'end\n'
-        + 'local splitAtPunctuationEnabled = selectedMaxWords ~= nil and splitAtPunctuation\n'
+        + 'local PUNCTUATION_MODE_NAMES = {\n'
+        + '    [0] = "Off",\n'
+        + '    [1] = "sentence ends only",\n'
+        + '    [2] = "sentence + commas (min half)",\n'
+        + '    [3] = "sentence + commas (min 2 words)",\n'
+        + '    [4] = "every punctuation mark"\n'
+        + '}\n'
+        + 'if not PUNCTUATION_MODE_NAMES[selectedPunctuationMode] then\n'
+        + '    selectedPunctuationMode = 0\n'
+        + 'end\n'
         + 'print("Max words per subtitle: " .. (selectedMaxWords and tostring(selectedMaxWords) or "Auto")\n'
-        + '    .. ", split at punctuation: " .. (splitAtPunctuationEnabled and "on" or "off"))'
+        + '    .. ", split at punctuation: " .. PUNCTUATION_MODE_NAMES[selectedPunctuationMode])'
     )
     patched = patched.replace(max_segment_marker, max_words_read, 1)
 
