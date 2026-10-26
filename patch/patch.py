@@ -166,7 +166,73 @@ local function buildSrtFromVibeOutput(rawText, srtFile, maxWords)
     return true, nil
 end
 
-local function buildSrtFromVibeOutputWithWordLimit(rawText, srtFile, maxWords, maxChars)
+local function buildSrtFromVibeOutputWithWordLimit(
+    rawText,
+    srtFile,
+    maxWords,
+    maxChars,
+    splitAtPunctuation
+)
+    local MAX_PAUSE_SECONDS = 0.55
+    local SOFT_BREAK_MIN_WORD_RATIO = 0.5
+    local HARD_BREAK_MARKS = {
+        ["."] = true,
+        ["?"] = true,
+        ["!"] = true,
+        ["…"] = true
+    }
+    local SOFT_BREAK_MARKS = {
+        [","] = true,
+        [";"] = true,
+        [":"] = true,
+        ["-"] = true,
+        ["‐"] = true,
+        ["‑"] = true,
+        ["‒"] = true,
+        ["–"] = true,
+        ["—"] = true,
+        ["―"] = true
+    }
+    local CLOSING_PUNCTUATION = {
+        "\"",
+        "'",
+        "`",
+        ")",
+        "]",
+        "}",
+        "»",
+        "›",
+        "”",
+        "’",
+        "」",
+        "』",
+        "）",
+        "】"
+    }
+    local ABBREVIATIONS = {
+        ["dr."] = true,
+        ["mr."] = true,
+        ["mrs."] = true,
+        ["ms."] = true,
+        ["prof."] = true,
+        ["sr."] = true,
+        ["jr."] = true,
+        ["st."] = true,
+        ["vs."] = true,
+        ["etc."] = true,
+        ["e.g."] = true,
+        ["i.e."] = true,
+        ["u.s."] = true,
+        ["u.k."] = true,
+        ["a.m."] = true,
+        ["p.m."] = true,
+        ["no."] = true,
+        ["fig."] = true,
+        ["inc."] = true,
+        ["ltd."] = true,
+        ["co."] = true
+    }
+
     local words = {}
 
     for startTime, endTime, word in rawText:gmatch(
@@ -214,6 +280,60 @@ local function buildSrtFromVibeOutputWithWordLimit(rawText, srtFile, maxWords, m
         return count
     end
 
+    local function punctuationText(text)
+        local changed = true
+        while changed do
+            changed = false
+            for _, suffix in ipairs(CLOSING_PUNCTUATION) do
+                if text:sub(-#suffix) == suffix then
+                    text = text:sub(1, #text - #suffix)
+                    changed = true
+                    break
+                end
+            end
+        end
+        return text
+    end
+
+    local function trailingPunctuation(text)
+        text = punctuationText(text)
+        if text:sub(-3) == "…" then
+            return "…"
+        end
+        return text:sub(-1)
+    end
+
+    local function hardPunctuationBreak(previous, nextWord)
+        local mark = trailingPunctuation(previous.text)
+        if not HARD_BREAK_MARKS[mark] then
+            return false
+        end
+        if mark ~= "." then
+            return true
+        end
+
+        local ending = punctuationText(previous.text):lower()
+        local initialism = #ending >= 4 and #ending % 2 == 0
+        if initialism then
+            for position = 1, #ending, 2 do
+                if not ending:sub(position, position):match("%a")
+                    or ending:sub(position + 1, position + 1) ~= "." then
+                    initialism = false
+                    break
+                end
+            end
+        end
+        if ABBREVIATIONS[ending]
+            or ending:match("^%a%.$")
+            or initialism then
+            return false
+        end
+        if ending:match("%d%.$") and nextWord.text:match("^%d") then
+            return false
+        end
+        return true
+    end
+
     local entries = {}
     local current = {}
     local currentChars = 0
@@ -240,7 +360,8 @@ local function buildSrtFromVibeOutputWithWordLimit(rawText, srtFile, maxWords, m
         currentChars = 0
     end
 
-    for _, item in ipairs(words) do
+    for i, item in ipairs(words) do
+        local previous = words[i - 1]
         local additionalChars = characterCount(item.text)
         if #current > 0 then
             additionalChars = additionalChars + 1
@@ -248,7 +369,24 @@ local function buildSrtFromVibeOutputWithWordLimit(rawText, srtFile, maxWords, m
 
         local tooManyWords = #current >= maxWords
         local tooLong = currentChars + additionalChars > maxChars
-        if #current > 0 and (tooManyWords or tooLong) then
+        local longPause = previous
+            and item.start - previous.finish >= MAX_PAUSE_SECONDS
+        local punctuationBreak = false
+        if splitAtPunctuation and previous and #current > 0 then
+            if hardPunctuationBreak(previous, item) then
+                punctuationBreak = true
+            elseif #current >= math.ceil(maxWords * SOFT_BREAK_MIN_WORD_RATIO)
+                and SOFT_BREAK_MARKS[trailingPunctuation(previous.text)] then
+                punctuationBreak = true
+            end
+        end
+
+        if #current > 0 and (
+            tooManyWords
+            or tooLong
+            or longPause
+            or punctuationBreak
+        ) then
             flush()
             additionalChars = characterCount(item.text)
         end
@@ -474,7 +612,8 @@ local function transcribeWithVibeServerWordLimit(
     language,
     maxSentenceLen,
     prompt,
-    maxWords
+    maxWords,
+    splitAtPunctuation
 )
     local rawFile = tempPath("MagicSubtitlesVibeRaw")
 
@@ -513,7 +652,8 @@ local function transcribeWithVibeServerWordLimit(
             rawOutput,
             srtFile,
             maxWords,
-            tonumber(maxSentenceLen) or 35
+            tonumber(maxSentenceLen) or 35,
+            splitAtPunctuation
         )
 
     if not srtOk then
@@ -553,7 +693,8 @@ elseif vibeMode == "legacy" then
                 selectedLanguage,
                 maxSentenceLen,
                 initPrompt,
-                selectedMaxWords
+                selectedMaxWords,
+                splitAtPunctuation
             )
     else
         ok, exitCode, err =
@@ -617,7 +758,14 @@ def patch_file(original_path, output_path):
         + '    selectedMaxWordsIndex = tonumber(tool.MaxWords[0]) or 0\n'
         + 'end\n'
         + 'local selectedMaxWords = MAX_WORD_OPTIONS[selectedMaxWordsIndex]\n'
-        + 'print("Max words per subtitle: " .. (selectedMaxWords and tostring(selectedMaxWords) or "Auto"))'
+        + 'local splitAtPunctuation = false\n'
+        + 'if tool and tool.SplitPunctuation then\n'
+        + '    local checkboxValue = tool.SplitPunctuation[0]\n'
+        + '    splitAtPunctuation = checkboxValue == true or tonumber(checkboxValue) == 1\n'
+        + 'end\n'
+        + 'local splitAtPunctuationEnabled = selectedMaxWords ~= nil and splitAtPunctuation\n'
+        + 'print("Max words per subtitle: " .. (selectedMaxWords and tostring(selectedMaxWords) or "Auto")\n'
+        + '    .. ", split at punctuation: " .. (splitAtPunctuationEnabled and "on" or "off"))'
     )
     patched = patched.replace(max_segment_marker, max_words_read, 1)
 

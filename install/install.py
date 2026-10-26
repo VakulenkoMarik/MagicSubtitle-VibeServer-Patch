@@ -44,6 +44,7 @@ def PatchCreateSubtitlesSetting(setting_path):
     if (
         "ConvertTextPlus = InstanceInput {" in setting
         or "MaxWords = InstanceInput {" in setting
+        or "SplitPunctuation = InstanceInput {" in setting
         or execute_path in setting
     ):
         raise SystemExit("ERROR: CreateSubtitles.setting already has the patched controls.")
@@ -53,6 +54,11 @@ def PatchCreateSubtitlesSetting(setting_path):
         raise SystemExit("ERROR: Could not uniquely find the CreateSubtitles tool insertion point.")
 
     instance_input = (
+        '\t\t\t\tSplitPunctuation = InstanceInput {\n'
+        '\t\t\t\t\tSourceOp = "BUTTONS",\n'
+        '\t\t\t\t\tSource = "SplitPunctuation",\n'
+        '\t\t\t\t\tWidth = 1,\n'
+        '\t\t\t\t},\n\n'
         '\t\t\t\tMaxWords = InstanceInput {\n'
         '\t\t\t\t\tSourceOp = "BUTTONS",\n'
         '\t\t\t\t\tSource = "MaxWords",\n'
@@ -95,6 +101,13 @@ def PatchCreateSubtitlesSetting(setting_path):
         '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
         '\t\t\t\t\t\t\tCC_LabelPosition = "Horizontal",\n'
         '\t\t\t\t\t\t\tLINKS_Name = "Max words per subtitle",\n'
+        '\t\t\t\t\t\t},\n'
+        '\t\t\t\t\t\tSplitPunctuation = {\n'
+        '\t\t\t\t\t\t\tINP_Integer = true,\n'
+        '\t\t\t\t\t\t\tINPID_InputControl = "CheckboxControl",\n'
+        '\t\t\t\t\t\t\tINP_Default = 0,\n'
+        '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
+        '\t\t\t\t\t\t\tLINKS_Name = "Split at punctuation",\n'
         '\t\t\t\t\t\t},\n'
         '\t\t\t\t\t},\n'
         '\t\t\t\t},\n\n'
