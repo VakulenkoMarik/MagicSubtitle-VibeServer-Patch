@@ -41,14 +41,23 @@ def PatchCreateSubtitlesSetting(setting_path):
         "Edit/Scripts/ConvertSubtitlesToTextPlus.lua"
     )
 
-    if "ConvertTextPlus = InstanceInput {" in setting or execute_path in setting:
-        raise SystemExit("ERROR: CreateSubtitles.setting already has the Text+ button.")
+    if (
+        "ConvertTextPlus = InstanceInput {" in setting
+        or "MaxWords = InstanceInput {" in setting
+        or execute_path in setting
+    ):
+        raise SystemExit("ERROR: CreateSubtitles.setting already has the patched controls.")
     if setting.count(instance_marker) != 1:
         raise SystemExit("ERROR: Could not uniquely find the CreateSubtitles input insertion point.")
     if setting.count(tool_marker) != 1:
         raise SystemExit("ERROR: Could not uniquely find the CreateSubtitles tool insertion point.")
 
     instance_input = (
+        '\t\t\t\tMaxWords = InstanceInput {\n'
+        '\t\t\t\t\tSourceOp = "BUTTONS",\n'
+        '\t\t\t\t\tSource = "MaxWords",\n'
+        '\t\t\t\t\tWidth = 1,\n'
+        '\t\t\t\t},\n\n'
         '\t\t\t\tConvertTextPlus = InstanceInput {\n'
         '\t\t\t\t\tSourceOp = "BUTTONS",\n'
         '\t\t\t\t\tSource = "ConvertTextPlus",\n'
@@ -69,6 +78,23 @@ def PatchCreateSubtitlesSetting(setting_path):
         '\t\t\t\t\t\t\tBTNCS_Execute = "' + execute_path + '",\n'
         '\t\t\t\t\t\t\tLINKS_Name = "Convert to Text+",\n'
         '\t\t\t\t\t\t\tICS_ControlPage = "Controls",\n'
+        '\t\t\t\t\t\t},\n'
+        '\t\t\t\t\t\tMaxWords = {\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "Auto" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "1" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "2" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "3" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "4" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "5" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "6" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "8" },\n'
+        '\t\t\t\t\t\t\t{ CCS_AddString = "10" },\n'
+        '\t\t\t\t\t\t\tINP_Integer = false,\n'
+        '\t\t\t\t\t\t\tINPID_InputControl = "ComboControl",\n'
+        '\t\t\t\t\t\t\tINP_Default = 0,\n'
+        '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
+        '\t\t\t\t\t\t\tCC_LabelPosition = "Horizontal",\n'
+        '\t\t\t\t\t\t\tLINKS_Name = "Max words per subtitle",\n'
         '\t\t\t\t\t\t},\n'
         '\t\t\t\t\t},\n'
         '\t\t\t\t},\n\n'
@@ -136,7 +162,7 @@ def Install(drfx_path):
                 f"ERROR: CreateSubtitles.setting not found:\n{setting_path}"
             )
 
-        print("Adding Convert to Text+ button...")
+        print("Adding Max words per subtitle dropdown and Convert to Text+ button...")
         PatchCreateSubtitlesSetting(setting_path)
 
         if not CONVERTER_SOURCE.exists():

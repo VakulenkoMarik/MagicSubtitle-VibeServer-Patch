@@ -166,6 +166,114 @@ local function buildSrtFromVibeOutput(rawText, srtFile, maxWords)
     return true, nil
 end
 
+local function buildSrtFromVibeOutputWithWordLimit(rawText, srtFile, maxWords, maxChars)
+    local words = {}
+
+    for startTime, endTime, word in rawText:gmatch(
+        "%[(%d+:%d+:%d+%.%d+)%s+%-%->%s+(%d+:%d+:%d+%.%d+)%]%s*([^\n]*)"
+    ) do
+        if word ~= "" then
+            table.insert(words, {
+                start = parseVibeTimestamp(startTime),
+                finish = parseVibeTimestamp(endTime),
+                text = word
+            })
+        end
+    end
+
+    if #words == 0 then
+        return false, "No timestamped words found in Vibe output"
+    end
+
+    local function formatSrtTime(seconds)
+        local totalMs = math.floor(seconds * 1000 + 0.5)
+        local hours = math.floor(totalMs / 3600000)
+        totalMs = totalMs % 3600000
+        local minutes = math.floor(totalMs / 60000)
+        totalMs = totalMs % 60000
+        local secs = math.floor(totalMs / 1000)
+        local millis = totalMs % 1000
+
+        return string.format(
+            "%02d:%02d:%02d,%03d",
+            hours,
+            minutes,
+            secs,
+            millis
+        )
+    end
+
+    local function characterCount(text)
+        local count = 0
+        for i = 1, #text do
+            local byte = string.byte(text, i)
+            if byte < 128 or byte >= 192 then
+                count = count + 1
+            end
+        end
+        return count
+    end
+
+    local entries = {}
+    local current = {}
+    local currentChars = 0
+
+    local function flush()
+        if #current == 0 then
+            return
+        end
+
+        local parts = {}
+        for _, item in ipairs(current) do
+            table.insert(parts, item.text)
+        end
+
+        table.insert(entries,
+            formatSrtTime(current[1].start)
+            .. " --> "
+            .. formatSrtTime(current[#current].finish)
+            .. "\n"
+            .. table.concat(parts, " ")
+        )
+
+        current = {}
+        currentChars = 0
+    end
+
+    for _, item in ipairs(words) do
+        local additionalChars = characterCount(item.text)
+        if #current > 0 then
+            additionalChars = additionalChars + 1
+        end
+
+        local tooManyWords = #current >= maxWords
+        local tooLong = currentChars + additionalChars > maxChars
+        if #current > 0 and (tooManyWords or tooLong) then
+            flush()
+            additionalChars = characterCount(item.text)
+        end
+
+        table.insert(current, item)
+        currentChars = currentChars + additionalChars
+    end
+
+    flush()
+
+    local output = {}
+    for i, entry in ipairs(entries) do
+        table.insert(output, tostring(i))
+        table.insert(output, entry)
+        table.insert(output, "")
+    end
+
+    local ok = writeFile(srtFile, table.concat(output, "\n"))
+    if not ok then
+        return false, "Could not write SRT file"
+    end
+
+    return true, nil
+end
+
 local function parseSrtTimestamp(timestamp)
     local h, m, s, ms = timestamp:match("(%d+):(%d+):(%d+),(%d+)")
     if not h then return nil end
@@ -358,6 +466,63 @@ local function transcribeWithVibeServer(
     return true, exitCode, nil
 end
 
+local function transcribeWithVibeServerWordLimit(
+    vibeServerExe,
+    audioFile,
+    srtFile,
+    modelPath,
+    language,
+    maxSentenceLen,
+    prompt,
+    maxWords
+)
+    local rawFile = tempPath("MagicSubtitlesVibeRaw")
+
+    local cmd =
+        shellArg(vibeServerExe)
+        .. " transcribe "
+        .. shellArg(modelPath)
+        .. " "
+        .. shellArg(audioFile)
+        .. " --word-timestamps"
+
+    if language and language ~= "" and language ~= "auto" then
+        cmd = cmd .. " --language " .. shellArg(language)
+    end
+
+    cmd = cmd .. " --max-segment-len 1"
+
+    if prompt and prompt ~= "" then
+        cmd = cmd .. " --prompt " .. shellArg(prompt)
+    end
+
+    cmd = cmd .. " > " .. shellArg(rawFile) .. " 2>&1"
+
+    local ok, exitCode = runCmd(cmd)
+    if not ok then
+        local output = readFile(rawFile) or ""
+        os.remove(rawFile)
+        return false, exitCode, output
+    end
+
+    local rawOutput = readFile(rawFile) or ""
+    os.remove(rawFile)
+
+    local srtOk, srtErr =
+        buildSrtFromVibeOutputWithWordLimit(
+            rawOutput,
+            srtFile,
+            maxWords,
+            tonumber(maxSentenceLen) or 35
+        )
+
+    if not srtOk then
+        return false, exitCode, srtErr
+    end
+
+    return true, exitCode, nil
+end
+
 '''
 
 
@@ -377,16 +542,31 @@ elseif vibeMode == "legacy" then
 
     local t0 = os.time()
 
-    local ok, exitCode, err =
-        transcribeWithVibeServer(
-            vibeServerExe,
-            audioFile,
-            srtFile,
-            modelPath,
-            selectedLanguage,
-            maxSentenceLen,
-            initPrompt
-        )
+    local ok, exitCode, err
+    if selectedMaxWords then
+        ok, exitCode, err =
+            transcribeWithVibeServerWordLimit(
+                vibeServerExe,
+                audioFile,
+                srtFile,
+                modelPath,
+                selectedLanguage,
+                maxSentenceLen,
+                initPrompt,
+                selectedMaxWords
+            )
+    else
+        ok, exitCode, err =
+            transcribeWithVibeServer(
+                vibeServerExe,
+                audioFile,
+                srtFile,
+                modelPath,
+                selectedLanguage,
+                maxSentenceLen,
+                initPrompt
+            )
+    end
 
     print(
         "   Elapsed: "
@@ -423,6 +603,23 @@ def patch_file(original_path, output_path):
         HELPERS + "\n" + detect_marker,
         1
     )
+
+    max_segment_marker = 'print("Max segment length: " .. maxSentenceLen)'
+    if patched.count(max_segment_marker) != 1:
+        raise SystemExit("ERROR: Could not uniquely find the Max segment length control read.")
+    max_words_read = (
+        max_segment_marker
+        + '\n\n'
+        + 'local MAX_WORD_OPTIONS = { [1] = 1, [2] = 2, [3] = 3, [4] = 4, '
+        + '[5] = 5, [6] = 6, [7] = 8, [8] = 10 }\n'
+        + 'local selectedMaxWordsIndex = 0\n'
+        + 'if tool and tool.MaxWords then\n'
+        + '    selectedMaxWordsIndex = tonumber(tool.MaxWords[0]) or 0\n'
+        + 'end\n'
+        + 'local selectedMaxWords = MAX_WORD_OPTIONS[selectedMaxWordsIndex]\n'
+        + 'print("Max words per subtitle: " .. (selectedMaxWords and tostring(selectedMaxWords) or "Auto"))'
+    )
+    patched = patched.replace(max_segment_marker, max_words_read, 1)
 
     branch_marker = "-- Branch B: old Vibe (legacy CLI)"
 
