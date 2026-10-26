@@ -17,6 +17,9 @@ This patch:
 * supports `--max-segment-len`
 * converts Vibe's timestamped output into SRT
 * imports the generated SRT into DaVinci Resolve
+* adds a **Convert to Text+** button that converts subtitle track 1 onto a new video track
+
+To use **Convert to Text+**, first drag Text+ from Effects > Titles into the Media Pool. Each click creates another video track; the source subtitle track and existing V1 clips are left in place.
 
 ## Requirements
 
