@@ -2,14 +2,7 @@ local function reportFailure(message)
     print("Convert to Text+: " .. tostring(message))
 end
 
-local function isTextPlusName(name)
-    local value = string.lower(tostring(name or ""))
-    return string.find(value, "text+", 1, true) ~= nil
-        or string.find(value, "textplus", 1, true) ~= nil
-        or string.find(value, "text plus", 1, true) ~= nil
-end
-
-local function findTextPlus(folder, visited)
+local function findTemplates(folder, templateName, visited, matches, fusionTitleNames)
     local identity = tostring(folder)
     if visited[identity] then return nil end
     visited[identity] = true
@@ -17,18 +10,18 @@ local function findTextPlus(folder, visited)
     local clips = folder:GetClipList() or {}
     for _, mediaPoolItem in ipairs(clips) do
         local clipType = mediaPoolItem:GetClipProperty("Type")
-        if string.lower(tostring(clipType or "")) ~= "timeline"
-            and isTextPlusName(mediaPoolItem:GetName())
-        then
-            return mediaPoolItem
+        if clipType == "Fusion Title" then
+            local name = mediaPoolItem:GetName()
+            table.insert(fusionTitleNames, tostring(name or ""))
+            if name == templateName then
+                table.insert(matches, mediaPoolItem)
+            end
         end
     end
 
     for _, subfolder in ipairs(folder:GetSubFolderList() or {}) do
-        local found = findTextPlus(subfolder, visited)
-        if found then return found end
+        findTemplates(subfolder, templateName, visited, matches, fusionTitleNames)
     end
-    return nil
 end
 
 local function getItems(timeline, trackType, trackIndex)
@@ -94,13 +87,36 @@ local function main()
         return
     end
 
+    local templateName = tostring(
+        tool and tool.TemplateName and tool.TemplateName[0] or "Text+"
+    )
     local mediaPool = project:GetMediaPool()
     local root = mediaPool and mediaPool:GetRootFolder()
-    local mediaPoolItem = root and findTextPlus(root, {})
-    if not mediaPoolItem then
-        print("Text+ not found. Drag Text+ from Effects > Titles into the Media Pool, then click Convert to Text+ again.")
+    local matches = {}
+    local fusionTitleNames = {}
+    if root then
+        findTemplates(root, templateName, {}, matches, fusionTitleNames)
+    end
+    if #matches == 0 then
+        local names = {}
+        for index = 1, math.min(5, #fusionTitleNames) do
+            table.insert(names, fusionTitleNames[index])
+        end
+        print(string.format(
+            'Template "%s" not found. Fusion Titles in Media Pool: %s',
+            templateName,
+            #names > 0 and table.concat(names, ", ") or "none"
+        ))
         return
     end
+    local mediaPoolItem = matches[1]
+    if #matches > 1 then
+        print(string.format(
+            'Found %d Fusion Title items named "%s"; using the first.',
+            #matches, templateName
+        ))
+    end
+    print("Template: " .. templateName)
 
     print("Convert to Text+: reading subtitle track 1")
     local subtitleItems = getItems(timeline, "subtitle", 1)
@@ -143,29 +159,106 @@ local function main()
         return
     end
 
-    local appendArguments = {}
-    for _, subtitle in ipairs(subtitles) do
-        table.insert(appendArguments, {
-            mediaPoolItem = mediaPoolItem,
-            startFrame = 0,
-            endFrame = subtitle.duration,
-            recordFrame = subtitle.startFrame,
-            trackIndex = newTrack,
-        })
+    local function appendSubtitle(subtitle)
+        return pcall(function()
+            return mediaPool:AppendToTimeline({
+                {
+                    mediaPoolItem = mediaPoolItem,
+                    startFrame = 0,
+                    endFrame = subtitle.duration,
+                    recordFrame = subtitle.startFrame,
+                    trackIndex = newTrack,
+                },
+            })
+        end)
     end
 
     print(string.format(
-        "Convert to Text+: batch appending %d item(s) to V%d",
-        #subtitles, newTrack
+        "Convert to Text+: appending verification item to V%d",
+        newTrack
     ))
-    local batchOk, batchResult = pcall(function()
-        return mediaPool:AppendToTimeline(appendArguments)
-    end)
-    local returnedItems = {}
-    if batchOk then
-        timelineItemsFromResult(batchResult, returnedItems, {})
+    local firstOk, firstResult = appendSubtitle(subtitles[1])
+    local firstReturnedItems = {}
+    if firstOk then
+        timelineItemsFromResult(firstResult, firstReturnedItems, {})
     else
-        print("Convert to Text+: batch append failed: " .. tostring(batchResult))
+        print("Convert to Text+: verification append failed: " .. tostring(firstResult))
+    end
+    local verificationTrackItems = getItems(timeline, "video", newTrack)
+    local firstItem
+    local firstReturnedItem = firstReturnedItems[1]
+    if firstReturnedItem then
+        for _, candidate in ipairs(verificationTrackItems) do
+            if tostring(candidate) == tostring(firstReturnedItem) then
+                firstItem = candidate
+                break
+            end
+        end
+    end
+    if not firstItem then
+        for _, candidate in ipairs(verificationTrackItems) do
+            if tonumber(candidate:GetStart()) == tonumber(subtitles[1].startFrame)
+                and tonumber(candidate:GetDuration()) == tonumber(subtitles[1].duration)
+            then
+                firstItem = candidate
+                break
+            end
+        end
+    end
+    if not firstItem then
+        reportFailure("Could not verify the first appended clip; delete the new V"
+            .. tostring(newTrack) .. " track.")
+        return
+    end
+
+    local verificationOk, textTool = pcall(readTextTool, firstItem)
+    if not verificationOk or not textTool then
+        print('The chosen item "' .. templateName .. '" is not a Text+ template.')
+        local itemIdentity = tostring(firstItem)
+        local deleteOk = pcall(function()
+            return timeline:DeleteClips({ firstItem }, false)
+        end)
+        local clipRemains = false
+        for _, item in ipairs(getItems(timeline, "video", newTrack)) do
+            if tostring(item) == itemIdentity then
+                clipRemains = true
+                break
+            end
+        end
+        if deleteOk and not clipRemains then
+            print("Removed the verification clip from V" .. tostring(newTrack) .. ".")
+        else
+            print("Please delete the new V" .. tostring(newTrack)
+                .. " track; the verification clip could not be removed safely.")
+        end
+        return
+    end
+
+    local returnedItems = { firstItem }
+    if #subtitles > 1 then
+        local appendArguments = {}
+        for index = 2, #subtitles do
+            local subtitle = subtitles[index]
+            table.insert(appendArguments, {
+                mediaPoolItem = mediaPoolItem,
+                startFrame = 0,
+                endFrame = subtitle.duration,
+                recordFrame = subtitle.startFrame,
+                trackIndex = newTrack,
+            })
+        end
+        print(string.format(
+            "Convert to Text+: batch appending %d item(s) to V%d",
+            #appendArguments, newTrack
+        ))
+        local batchOk, batchResult = pcall(function()
+            return mediaPool:AppendToTimeline(appendArguments)
+        end)
+        if batchOk then
+            timelineItemsFromResult(batchResult, returnedItems, {})
+        else
+            print("Convert to Text+: batch append failed: " .. tostring(batchResult))
+        end
     end
 
     local trackItems = getItems(timeline, "video", newTrack)

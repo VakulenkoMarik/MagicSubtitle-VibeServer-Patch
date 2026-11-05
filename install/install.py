@@ -43,6 +43,7 @@ def PatchCreateSubtitlesSetting(setting_path):
 
     if (
         "ConvertTextPlus = InstanceInput {" in setting
+        or "TemplateName = InstanceInput {" in setting
         or "MaxWords = InstanceInput {" in setting
         or "SplitPunctuation = InstanceInput {" in setting
         or execute_path in setting
@@ -54,6 +55,11 @@ def PatchCreateSubtitlesSetting(setting_path):
         raise SystemExit("ERROR: Could not uniquely find the CreateSubtitles tool insertion point.")
 
     instance_input = (
+        '\t\t\t\tTemplateName = InstanceInput {\n'
+        '\t\t\t\t\tSourceOp = "BUTTONS",\n'
+        '\t\t\t\t\tSource = "TemplateName",\n'
+        '\t\t\t\t\tWidth = 1,\n'
+        '\t\t\t\t},\n\n'
         '\t\t\t\tSplitPunctuation = InstanceInput {\n'
         '\t\t\t\t\tSourceOp = "BUTTONS",\n'
         '\t\t\t\t\tSource = "SplitPunctuation",\n'
@@ -75,6 +81,14 @@ def PatchCreateSubtitlesSetting(setting_path):
     wireless_button = (
         '\t\t\t\tBUTTONS = Fuse.Wireless {\n'
         '\t\t\t\t\tUserControls = ordered() {\n'
+        '\t\t\t\t\t\tTemplateName = {\n'
+        '\t\t\t\t\t\t\tINPID_InputControl = "TextEditControl",\n'
+        '\t\t\t\t\t\t\tINP_Default = "Text+",\n'
+        '\t\t\t\t\t\t\tLINKID_DataType = "Text",\n'
+        '\t\t\t\t\t\t\tIC_Visible = true,\n'
+        '\t\t\t\t\t\t\tTEC_Lines = 1,\n'
+        '\t\t\t\t\t\t\tLINKS_Name = "Template name",\n'
+        '\t\t\t\t\t\t},\n'
         '\t\t\t\t\t\tConvertTextPlus = {\n'
         '\t\t\t\t\t\t\tICD_Width = 1,\n'
         '\t\t\t\t\t\t\tINP_Integer = false,\n'

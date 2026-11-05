@@ -19,7 +19,7 @@ This patch:
 * imports the generated SRT into DaVinci Resolve
 * adds a **Convert to Text+** button that converts subtitle track 1 onto a new video track
 
-To use **Convert to Text+**, first drag Text+ from Effects > Titles into the Media Pool. Each click creates another video track; the source subtitle track and existing V1 clips are left in place.
+To use **Convert to Text+**, add a Fusion Title to the Media Pool and enter its exact name in the **Template name** field (default: `Text+`). Each click creates another video track; the source subtitle track and existing V1 clips are left in place.
 
 ## Requirements
 
