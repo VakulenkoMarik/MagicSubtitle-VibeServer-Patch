@@ -10,6 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 PATCH_DIR = ROOT / "patch"
 CONVERTER_SOURCE = ROOT / "install" / "ConvertSubtitlesToTextPlus.lua"
+SPLITTER_SOURCE = ROOT / "install" / "SplitTextPlus.lua"
 
 DEFAULT_DRFX = (
     Path.home()
@@ -40,13 +41,20 @@ def PatchCreateSubtitlesSetting(setting_path):
         "@templates:MagicSubtitleLite.drfx/"
         "Edit/Scripts/ConvertSubtitlesToTextPlus.lua"
     )
+    split_execute_path = (
+        "@templates:MagicSubtitleLite.drfx/"
+        "Edit/Scripts/SplitTextPlus.lua"
+    )
 
     if (
         "ConvertTextPlus = InstanceInput {" in setting
         or "TemplateName = InstanceInput {" in setting
         or "MaxWords = InstanceInput {" in setting
         or "SplitPunctuation = InstanceInput {" in setting
+        or "SplitTextPlus = InstanceInput {" in setting
+        or "SplitAfterWord = InstanceInput {" in setting
         or execute_path in setting
+        or split_execute_path in setting
     ):
         raise SystemExit("ERROR: CreateSubtitles.setting already has the patched controls.")
     if setting.count(instance_marker) != 1:
@@ -75,6 +83,16 @@ def PatchCreateSubtitlesSetting(setting_path):
         '\t\t\t\t\tSource = "ConvertTextPlus",\n'
         '\t\t\t\t\tWidth = 1,\n'
         '\t\t\t\t},\n\n'
+        '\t\t\t\tSplitAfterWord = InstanceInput {\n'
+        '\t\t\t\t\tSourceOp = "BUTTONS",\n'
+        '\t\t\t\t\tSource = "SplitAfterWord",\n'
+        '\t\t\t\t\tWidth = 1,\n'
+        '\t\t\t\t},\n\n'
+        '\t\t\t\tSplitTextPlus = InstanceInput {\n'
+        '\t\t\t\t\tSourceOp = "BUTTONS",\n'
+        '\t\t\t\t\tSource = "SplitTextPlus",\n'
+        '\t\t\t\t\tWidth = 1,\n'
+        '\t\t\t\t},\n\n'
         '\t\t\t\t'
         + instance_marker
     )
@@ -97,6 +115,26 @@ def PatchCreateSubtitlesSetting(setting_path):
         '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
         '\t\t\t\t\t\t\tBTNCS_Execute = "' + execute_path + '",\n'
         '\t\t\t\t\t\t\tLINKS_Name = "Convert to Text+",\n'
+        '\t\t\t\t\t\t\tICS_ControlPage = "Controls",\n'
+        '\t\t\t\t\t\t},\n'
+        '\t\t\t\t\t\tSplitAfterWord = {\n'
+        '\t\t\t\t\t\t\tINPID_InputControl = "SliderControl",\n'
+        '\t\t\t\t\t\t\tINP_Integer = true,\n'
+        '\t\t\t\t\t\t\tINP_Default = 1,\n'
+        '\t\t\t\t\t\t\tINP_MinScale = 1,\n'
+        '\t\t\t\t\t\t\tINP_MaxScale = 1000,\n'
+        '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
+        '\t\t\t\t\t\t\tLINKS_Name = "Split after word #",\n'
+        '\t\t\t\t\t\t\tICS_ControlPage = "Controls",\n'
+        '\t\t\t\t\t\t},\n'
+        '\t\t\t\t\t\tSplitTextPlus = {\n'
+        '\t\t\t\t\t\t\tICD_Width = 1,\n'
+        '\t\t\t\t\t\t\tINP_Integer = false,\n'
+        '\t\t\t\t\t\t\tINPID_InputControl = "ButtonControl",\n'
+        '\t\t\t\t\t\t\tINP_Default = 0,\n'
+        '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
+        '\t\t\t\t\t\t\tBTNCS_Execute = "' + split_execute_path + '",\n'
+        '\t\t\t\t\t\t\tLINKS_Name = "Split Text+",\n'
         '\t\t\t\t\t\t\tICS_ControlPage = "Controls",\n'
         '\t\t\t\t\t\t},\n'
         '\t\t\t\t\t\tMaxWords = {\n'
@@ -205,6 +243,14 @@ def Install(drfx_path):
         converter_path = extract_dir / "Edit" / "Scripts" / CONVERTER_SOURCE.name
         print("Packaging ConvertSubtitlesToTextPlus.lua...")
         shutil.copy2(CONVERTER_SOURCE, converter_path)
+
+        if not SPLITTER_SOURCE.exists():
+            raise SystemExit(
+                f"ERROR: Text+ split script not found:\n{SPLITTER_SOURCE}"
+            )
+        splitter_path = extract_dir / "Edit" / "Scripts" / SPLITTER_SOURCE.name
+        print("Packaging SplitTextPlus.lua...")
+        shutil.copy2(SPLITTER_SOURCE, splitter_path)
 
         print("Building patched .drfx...")
 
