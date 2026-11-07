@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PATCH_DIR = ROOT / "patch"
 CONVERTER_SOURCE = ROOT / "install" / "ConvertSubtitlesToTextPlus.lua"
 SPLITTER_SOURCE = ROOT / "install" / "SplitTextPlus.lua"
+TEMPLATE_APPLIER_SOURCE = ROOT / "install" / "ApplyTemplateToTextPlus.lua"
 
 DEFAULT_DRFX = (
     Path.home()
@@ -45,6 +46,10 @@ def PatchCreateSubtitlesSetting(setting_path):
         "@templates:MagicSubtitleLite.drfx/"
         "Edit/Scripts/SplitTextPlus.lua"
     )
+    apply_template_execute_path = (
+        "@templates:MagicSubtitleLite.drfx/"
+        "Edit/Scripts/ApplyTemplateToTextPlus.lua"
+    )
 
     if (
         "ConvertTextPlus = InstanceInput {" in setting
@@ -55,6 +60,9 @@ def PatchCreateSubtitlesSetting(setting_path):
         or "SplitAfterWord = InstanceInput {" in setting
         or execute_path in setting
         or split_execute_path in setting
+        or "StyleTemplateName = InstanceInput {" in setting
+        or "ApplyTemplate = InstanceInput {" in setting
+        or apply_template_execute_path in setting
     ):
         raise SystemExit("ERROR: CreateSubtitles.setting already has the patched controls.")
     if setting.count(instance_marker) != 1:
@@ -91,6 +99,16 @@ def PatchCreateSubtitlesSetting(setting_path):
         '\t\t\t\tSplitTextPlus = InstanceInput {\n'
         '\t\t\t\t\tSourceOp = "BUTTONS",\n'
         '\t\t\t\t\tSource = "SplitTextPlus",\n'
+        '\t\t\t\t\tWidth = 1,\n'
+        '\t\t\t\t},\n\n'
+        '\t\t\t\tStyleTemplateName = InstanceInput {\n'
+        '\t\t\t\t\tSourceOp = "BUTTONS",\n'
+        '\t\t\t\t\tSource = "StyleTemplateName",\n'
+        '\t\t\t\t\tWidth = 1,\n'
+        '\t\t\t\t},\n\n'
+        '\t\t\t\tApplyTemplate = InstanceInput {\n'
+        '\t\t\t\t\tSourceOp = "BUTTONS",\n'
+        '\t\t\t\t\tSource = "ApplyTemplate",\n'
         '\t\t\t\t\tWidth = 1,\n'
         '\t\t\t\t},\n\n'
         '\t\t\t\t'
@@ -135,6 +153,24 @@ def PatchCreateSubtitlesSetting(setting_path):
         '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
         '\t\t\t\t\t\t\tBTNCS_Execute = "' + split_execute_path + '",\n'
         '\t\t\t\t\t\t\tLINKS_Name = "Split Text+",\n'
+        '\t\t\t\t\t\t\tICS_ControlPage = "Controls",\n'
+        '\t\t\t\t\t\t},\n'
+        '\t\t\t\t\t\tStyleTemplateName = {\n'
+        '\t\t\t\t\t\t\tINPID_InputControl = "TextEditControl",\n'
+        '\t\t\t\t\t\t\tINP_Default = "",\n'
+        '\t\t\t\t\t\t\tLINKID_DataType = "Text",\n'
+        '\t\t\t\t\t\t\tIC_Visible = true,\n'
+        '\t\t\t\t\t\t\tTEC_Lines = 1,\n'
+        '\t\t\t\t\t\t\tLINKS_Name = "Style template name",\n'
+        '\t\t\t\t\t\t},\n'
+        '\t\t\t\t\t\tApplyTemplate = {\n'
+        '\t\t\t\t\t\t\tICD_Width = 1,\n'
+        '\t\t\t\t\t\t\tINP_Integer = false,\n'
+        '\t\t\t\t\t\t\tINPID_InputControl = "ButtonControl",\n'
+        '\t\t\t\t\t\t\tINP_Default = 0,\n'
+        '\t\t\t\t\t\t\tLINKID_DataType = "Number",\n'
+        '\t\t\t\t\t\t\tBTNCS_Execute = "' + apply_template_execute_path + '",\n'
+        '\t\t\t\t\t\t\tLINKS_Name = "Apply template",\n'
         '\t\t\t\t\t\t\tICS_ControlPage = "Controls",\n'
         '\t\t\t\t\t\t},\n'
         '\t\t\t\t\t\tMaxWords = {\n'
@@ -251,6 +287,16 @@ def Install(drfx_path):
         splitter_path = extract_dir / "Edit" / "Scripts" / SPLITTER_SOURCE.name
         print("Packaging SplitTextPlus.lua...")
         shutil.copy2(SPLITTER_SOURCE, splitter_path)
+
+        if not TEMPLATE_APPLIER_SOURCE.exists():
+            raise SystemExit(
+                f"ERROR: Apply template script not found:\n{TEMPLATE_APPLIER_SOURCE}"
+            )
+        template_applier_path = (
+            extract_dir / "Edit" / "Scripts" / TEMPLATE_APPLIER_SOURCE.name
+        )
+        print("Packaging ApplyTemplateToTextPlus.lua...")
+        shutil.copy2(TEMPLATE_APPLIER_SOURCE, template_applier_path)
 
         print("Building patched .drfx...")
 
